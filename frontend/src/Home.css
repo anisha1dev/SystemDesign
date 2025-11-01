@@ -1,0 +1,54 @@
+.home-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 2rem;
+}
+.path-logo{
+  height: 40px;
+  padding: 2rem;
+  margin-top: 12rem;
+  width: auto;
+  top: -10vh;
+  position: absolute;
+}
+.paths-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 1.5rem;
+  justify-items: center; /* centers each card horizontally */
+  width: 100%;
+  max-width: 1000px; /* optional max width */
+}
+
+.path-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  width: 180px;
+  height: 180px;
+  border: 2px solid #ccc;
+  border-radius: 12px;
+  padding: 1rem;
+  cursor: pointer;
+  text-align: center;
+  transition: transform 0.2s, box-shadow 0.2s;
+}
+
+.path-card:hover {
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+}
+
+.path-card img.chat-logo {
+  width: 80px;
+  height: 80px;
+  object-fit: cover;
+  margin-bottom: 1rem;
+  border-radius: 8px;
+}
+
+.path-card h3 {
+  font-size: 1rem;
+  font-weight: 600;
+}

@@ -1,8 +1,6 @@
-# hf_client.py
 from openai import OpenAI
 import os
 from dotenv import load_dotenv
-from prompt import SYSTEM_PROMPT
 
 load_dotenv()
 
@@ -11,12 +9,14 @@ client = OpenAI(
     api_key=os.environ["HF_TOKEN"]
 )
 
-
-def query_llm(user_message: str) -> str:
+def query_llm(user_message: str, system_prompt: str) -> str:
+    """
+    Query LLM with a dynamic system prompt based on user's selected learning path.
+    """
     completion = client.chat.completions.create(
         model="meta-llama/Meta-Llama-3-8B-Instruct:novita",
         messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_message}
         ]
     )
