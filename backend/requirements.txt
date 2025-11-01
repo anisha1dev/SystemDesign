@@ -1,16 +1,7 @@
-# OpenAI API client
-openai==1.33.0
-
-# FastAPI compatible with Pydantic 1.x
-fastapi==0.118.1
-pydantic==1.10.9
-
-# Async HTTP client for OpenAI
-httpx<1,>=0.23.0
-
-# MongoDB async driver
-motor==3.7.1
-
-# Other utilities
-python-dotenv==1.0.1
-uvicorn[standard]==0.23.2
+fastapi>=0.118.0
+uvicorn[standard]>=0.23.2
+pydantic>=2.6.2
+motor>=3.7.1
+python-dotenv
+openai>=1.33.0
+httpx>=0.28.1
