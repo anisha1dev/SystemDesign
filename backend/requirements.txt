@@ -13,3 +13,4 @@ motor==3.7.1
 
 # Other utilities
 python-dotenv==1.0.1
+uvicorn[standard]==0.23.2
