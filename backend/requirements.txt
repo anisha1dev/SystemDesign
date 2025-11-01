@@ -1,8 +1,9 @@
-fastapi==0.109.0
-uvicorn[standard]==0.23.0
 python-dotenv==1.0.0
 openai==1.33.0
-pydantic==1.10.11
+fastapi==0.111.2
+uvicorn[standard]==0.24.0
+pydantic==2.6.3
+python-dotenv==1.0.1
 motor==3.7.1
 bson==0.5.10
 requests==2.31.0

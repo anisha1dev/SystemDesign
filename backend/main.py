@@ -39,6 +39,9 @@ class UserMessage(BaseModel):
     context: dict = {}
     learning_path: str
     is_first_response: bool = False
+    model_config = {
+        "extra": "allow"
+    }
 
 def format_code(code: str, width: int = 80) -> str:
     lines = code.split("\n")
