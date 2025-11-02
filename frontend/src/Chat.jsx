@@ -1,106 +1,173 @@
 import { useState, useEffect, useRef } from "react";
-import axios from "axios";
-import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import "./App.css";
 import confetti from "canvas-confetti";
 import { useParams, useNavigate } from "react-router-dom";
 
 function Chat() {
-   const { learningPathId } = useParams();
-   
-console.log("learningPathId:", learningPathId);
+  const { learningPathId } = useParams();
   const navigate = useNavigate();
   const backendURL = import.meta.env.VITE_BACKEND_URL;
 
   const inputRef = useRef(null);
-  const inputStateRef = useRef("");
+  const recognitionRef = useRef(null);
 
   const [learningPath, setLearningPath] = useState(null);
   const [context, setContext] = useState({ conversation: [] });
   const [aiMessage, setAiMessage] = useState("");
-  const [codeSnippet, setCodeSnippet] = useState("");
   const [hint, setHint] = useState("");
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [progressPercent, setProgressPercent] = useState(0);
   const [currentIndex, setCurrentIndex] = useState(0);
-  const [lastScore, setLastScore] = useState(null);
-  const [lastFeedback, setLastFeedback] = useState("");
   const [logo, setLogo] = useState(null);
+  const [recording, setRecording] = useState(false);
 
   const MAX_MESSAGES = 20;
-  const TOTAL_QUESTIONS = 40;
+  const TOTAL_QUESTIONS = 20;
 
-  inputStateRef.current = input;
+  // ---------- TTS ----------
+  function playTTS(text) {
+    const utterance = new SpeechSynthesisUtterance(text);
+    const voices = speechSynthesis.getVoices();
+    const usFemaleVoice = voices.find(
+      (v) => v.lang === "en-US" && v.name.toLowerCase().includes("female")
+    );
+    utterance.voice =
+      usFemaleVoice || voices.find((v) => v.lang === "en-US") || voices[0];
+    speechSynthesis.speak(utterance);
+  }
 
- // Fetch learning path by ID
+  // ---------- STT (Browser Native) ----------
+  const startRecording = () => {
+    const SpeechRecognition =
+      window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      alert("Speech recognition not supported in this browser.");
+      return;
+    }
+
+    setRecording(true);
+    const recognition = new SpeechRecognition();
+    recognitionRef.current = recognition;
+    recognition.continuous = false;
+    recognition.interimResults = false;
+    recognition.lang = "en-US";
+
+    recognition.onresult = (event) => {
+      const transcript = event.results[0][0].transcript;
+      setInput(transcript);
+      handleSend();
+      setRecording(false);
+    };
+
+    recognition.onerror = (event) => {
+      console.error("STT error:", event.error);
+      setRecording(false);
+    };
+
+    recognition.start();
+  };
+
+  const stopRecording = () => {
+    recognitionRef.current?.stop();
+    setRecording(false);
+  };
+
+  // ---------- Fetch Learning Path ----------
   useEffect(() => {
     const fetchLearningPath = async () => {
       try {
-        const res = await axios.get(`${backendURL}/learning-paths/${learningPathId}`);
-        setLearningPath(res.data);
-        setAiMessage(`Welcome to ${res.data.title}!`);
-        if (res.data.image) setLogo(res.data.image);
+        const res = await fetch(
+          `${backendURL}/learning-paths/${learningPathId}`
+        );
+        const data = await res.json();
+        setLearningPath(data);
+        setAiMessage(`Welcome to ${data.title}!`);
+        if (data.image) setLogo(data.image);
 
-        // Load chat history from localStorage
-        const savedChat = JSON.parse(localStorage.getItem(`chat_${res.data._id}`)) || {};
+        // Load chat history
+        const savedChat =
+          JSON.parse(localStorage.getItem(`chat_${data._id}`)) || {};
         setContext(savedChat.context || { conversation: [] });
-        setAiMessage(savedChat.aiMessage || `Welcome to ${res.data.title}!`);
-        setCodeSnippet(savedChat.codeSnippet || "");
+        setAiMessage(savedChat.aiMessage || `Welcome to ${data.title}!`);
         setHint(savedChat.hint || "");
         setCurrentIndex((savedChat.context?.conversation?.length || 1) - 1);
       } catch (err) {
-        console.error("Failed to fetch learning path:", err);
+        console.error(err);
       }
     };
     fetchLearningPath();
-  }, [learningPathId]);
+  }, [learningPathId, backendURL]);
 
   const handleNavigateHome = () => navigate("/");
-  
+
   useEffect(() => {
-    if (!learningPath) return; // Wait until learningPath is loaded
+    if (!learningPath) return;
     localStorage.setItem(
       `chat_${learningPath._id}`,
-      JSON.stringify({ aiMessage, codeSnippet, hint, context })
+      JSON.stringify({ aiMessage, hint, context })
     );
-  }, [aiMessage, codeSnippet, hint, context, learningPath]);
+  }, [aiMessage, hint, context, learningPath]);
 
-  // Progress calculation: based on number of questions answered out of 20 total
+  // ---------- Progress ----------
   const calculateProgress = (conversation) => {
-    const userMessages = conversation.filter(msg => 
-      msg.sender === "user" && msg.score != null
-    );
-    
+    const userMessages = conversation.filter((msg) => msg.sender === "user");
     if (!userMessages.length) return 0;
-    
-    // Progress is based on how many questions answered out of total
-    const questionsAnswered = userMessages.length;
-    
-    return Math.round((questionsAnswered / TOTAL_QUESTIONS) * 100);
+    return Math.round((userMessages.length / TOTAL_QUESTIONS) * 100);
   };
 
   useEffect(() => {
     setProgressPercent(calculateProgress(context.conversation));
-    console.log("Current state:", {
-      currentIndex,
-      conversationLength: context.conversation.length,
-      progressPercent: calculateProgress(context.conversation),
-      conversation: context.conversation
-    });
   }, [context]);
 
+  // ---------- Keyboard Handling ----------
+  const spaceHoldThreshold = 200;
   useEffect(() => {
-    const handleTyping = (e) => {
-      if (progressPercent >= 100) return;
-      if (e.key.length === 1) setInput(prev => prev + e.key);
-      else if (e.key === "Backspace") setInput(prev => prev.slice(0, -1));
-      else if (e.key === "Enter") handleSend();
-    };
-    window.addEventListener("keydown", handleTyping);
-    return () => window.removeEventListener("keydown", handleTyping);
-  }, [progressPercent, input, context]);
+    let spaceTimeout = null;
 
+    const handleKeyDown = (e) => {
+      if (progressPercent >= 100) return;
+
+      if (e.code === "Space" && !recording && input.length === 0) {
+        e.preventDefault();
+        spaceTimeout = setTimeout(startRecording, spaceHoldThreshold);
+        return;
+      }
+
+      if (e.key === "Enter") {
+        e.preventDefault();
+        if (!recording && input.trim() !== "") handleSend();
+      }
+
+      if (document.activeElement !== inputRef.current && e.key.length === 1) {
+        setInput((prev) => prev + e.key);
+      }
+      if (
+        document.activeElement !== inputRef.current &&
+        e.key === "Backspace"
+      ) {
+        setInput((prev) => prev.slice(0, -1));
+      }
+    };
+
+    const handleKeyUp = (e) => {
+      if (e.code === "Space") {
+        clearTimeout(spaceTimeout);
+        if (recording) stopRecording();
+        else setInput((prev) => prev + " ");
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    window.addEventListener("keyup", handleKeyUp);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("keyup", handleKeyUp);
+      clearTimeout(spaceTimeout);
+    };
+  }, [recording, progressPercent, input]);
+
+  // ---------- Send Message ----------
   const handleSend = async () => {
     if (!input.trim()) return;
     const userInput = input;
@@ -109,75 +176,33 @@ console.log("learningPathId:", learningPathId);
 
     try {
       const recentConversation = context.conversation.slice(-MAX_MESSAGES);
-      
-      // Check if this is the first user response
-      const isFirstResponse = context.conversation.filter(msg => msg.sender === "user").length === 0;
-      
+      const isFirstResponse =
+        context.conversation.filter((msg) => msg.sender === "user").length ===
+        0;
+
       const payload = {
         message: userInput,
         learning_path: learningPath.title,
         context: { ...context, conversation: recentConversation },
-        is_first_response: isFirstResponse
+        is_first_response: isFirstResponse,
       };
-      const res = await axios.post(`${backendURL}/design_chat`, payload);
 
-      let reply;
-      try {
-        reply = typeof res.data.reply === "string" ? JSON.parse(res.data.reply) : res.data.reply;
-      } catch (e) {
-        console.warn("Reply was not valid JSON:", res.data.reply);
-        reply = { 
-          reply: res.data.reply, 
-          code: res.data.code, 
-          hint: res.data.hint,
-          score: res.data.score !== undefined ? res.data.score : 5,
-          feedback: res.data.feedback || ""
-        };
-      }
-
-      // Handle score properly - 0 is a valid score!
-      let score;
-      if (isFirstResponse) {
-        score = null;
-      } else {
-        // Check reply.score first, then res.data.score
-        if (reply.score !== undefined && reply.score !== null) {
-          score = reply.score;
-        } else if (res.data.score !== undefined && res.data.score !== null) {
-          score = res.data.score;
-        } else {
-          score = 5; // Only use 5 as fallback if no score exists
-        }
-      }
-      
-      const feedback = isFirstResponse ? "" : (reply.feedback ?? res.data.feedback ?? "");
-
-      console.log("Response:", reply);
-      console.log("Score:", score);
-      console.log("Is First Response:", isFirstResponse);
-
-      // Update last score and feedback for display (only if not first response)
-      if (!isFirstResponse) {
-        setLastScore(score);
-        setLastFeedback(feedback);
-      }
+      const res = await fetch(`${backendURL}/design_chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
 
       const newConversation = [
         ...context.conversation,
-        { sender: "user", text: userInput, score },
-        { 
-          sender: "system", 
-          text: reply.reply || res.data.reply || "Next question...", 
-          code: reply.code || res.data.code || "", 
-          hint: reply.hint || res.data.hint || "",
-          feedback: feedback
-        },
+        { sender: "user", text: userInput },
+        { sender: "system", text: data.reply, hint: data.hint || "" },
       ];
 
       setContext({ conversation: newConversation });
-      setAiMessage(reply.reply || res.data.reply || "Next question...");
-      setCodeSnippet(reply.code || res.data.code || "");
-      setHint(reply.hint || res.data.hint || "");
+      setAiMessage(data.reply);
+      setHint(data.hint || "");
       setCurrentIndex(newConversation.length - 1);
     } catch (err) {
       console.error(err);
@@ -188,195 +213,136 @@ console.log("learningPathId:", learningPathId);
     }
   };
 
+  // ---------- Navigation ----------
   const handleNext = () => {
-    console.log("handleNext called, currentIndex:", currentIndex);
-    console.log("conversation length:", context.conversation.length);
-    
     for (let i = currentIndex + 1; i < context.conversation.length; i++) {
-      console.log(`Checking index ${i}:`, context.conversation[i]);
-      
       if (context.conversation[i].sender === "system") {
         const msg = context.conversation[i];
-        console.log("Found system message at index", i, ":", msg);
-        
         setAiMessage(msg.text);
-        setCodeSnippet(msg.code || "");
         setHint(msg.hint || "");
         setCurrentIndex(i);
-        
-        // Get the previous user message's score
-        if (i > 0 && context.conversation[i - 1].sender === "user") {
-          const userMsg = context.conversation[i - 1];
-          console.log("Previous user message:", userMsg);
-          console.log("User score:", userMsg.score);
-          
-          const userScore = userMsg.score;
-          setLastScore(userScore !== undefined && userScore !== null ? userScore : null);
-          setLastFeedback(msg.feedback || "");
-        } else {
-          console.log("No user message before this system message");
-          setLastScore(null);
-          setLastFeedback("");
-        }
         break;
       }
     }
   };
 
   const handlePrev = () => {
-    console.log("handlePrev called, currentIndex:", currentIndex);
-    
     for (let i = currentIndex - 1; i >= 0; i--) {
-      console.log(`Checking index ${i}:`, context.conversation[i]);
-      
       if (context.conversation[i].sender === "system") {
         const msg = context.conversation[i];
-        console.log("Found system message at index", i, ":", msg);
-        
         setAiMessage(msg.text);
-        setCodeSnippet(msg.code || "");
         setHint(msg.hint || "");
         setCurrentIndex(i);
-        
-        // Get the previous user message's score
-        if (i > 0 && context.conversation[i - 1].sender === "user") {
-          const userMsg = context.conversation[i - 1];
-          console.log("Previous user message:", userMsg);
-          console.log("User score:", userMsg.score);
-          
-          const userScore = userMsg.score;
-          setLastScore(userScore !== undefined && userScore !== null ? userScore : null);
-          setLastFeedback(msg.feedback || "");
-        } else {
-          console.log("No user message before this system message");
-          setLastScore(null);
-          setLastFeedback("");
-        }
         break;
       }
     }
   };
 
-  // Get score color
-  const getScoreColor = (score) => {
-    if (score >= 8) return "#22c55e"; // green
-    if (score >= 6) return "#eab308"; // yellow
-    if (score >= 4) return "#f97316"; // orange
-    return "#ef4444"; // red
-  };
-
-  // Fireworks
+  // ---------- Fireworks ----------
   useEffect(() => {
     if (progressPercent >= 100) {
-      const duration = 5 * 1000;
+      const duration = 5000;
       const animationEnd = Date.now() + duration;
-      const defaults = { startVelocity: 30, spread: 360, ticks: 60, zIndex: 999 };
+      const defaults = {
+        startVelocity: 30,
+        spread: 360,
+        ticks: 60,
+        zIndex: 999,
+      };
 
       const interval = setInterval(() => {
         const timeLeft = animationEnd - Date.now();
         if (timeLeft <= 0) return clearInterval(interval);
         const particleCount = 50 * (timeLeft / duration);
-        confetti({ ...defaults, particleCount, origin: { x: Math.random(), y: Math.random() - 0.2 } });
+        confetti({
+          ...defaults,
+          particleCount,
+          origin: { x: Math.random(), y: Math.random() - 0.2 },
+        });
       }, 250);
     }
   }, [progressPercent]);
 
+  // ---------- Auto TTS ----------
+  useEffect(() => {
+    if (aiMessage) playTTS(aiMessage);
+  }, [aiMessage]);
+
   return (
     <>
       <div className="progress-container">
-        <div className="progress-text">{progressPercent}% completed</div>
         <div className="progress-bar">
-          <div className="progress-fill" style={{ width: `${progressPercent}%` }} />
+          <div
+            className="progress-fill"
+            style={{ width: `${progressPercent}%` }}
+          />
         </div>
       </div>
 
       <div className="chat-container">
-        {progressPercent < 100 || currentIndex < context.conversation.length - 1 ? (
+        {progressPercent < 100 ||
+        currentIndex < context.conversation.length - 1 ? (
           <>
             <div className="chat-panel">
               <div className="chat-box">
                 {logo && (
-                  <img 
-                    src={logo} 
-                    alt="Logo" 
-                    className="chat-logo" 
-                    onClick={handleNavigateHome}
-                    style={{ cursor: 'pointer' }}
-                    title="Go to home"
-                  />
-                )}
-                
-                {/* Score Display - only show if there's a valid score */}
-                {lastScore !== null && lastScore !== undefined && (
-                  <div className="score-display" style={{
-                    padding: "12px",
-                    marginBottom: "16px",
-                    borderRadius: "8px",
-                    backgroundColor: "rgba(195, 195, 195, 0.2)",
-                    border: `2px solid ${getScoreColor(lastScore)}`
-                  }}>
-                    <div style={{ 
-                      fontSize: "24px", 
-                      fontWeight: "bold",
-                      color: getScoreColor(lastScore)
-                    }}>
-                      Score: {lastScore}/10
-                    </div>
-                    {lastFeedback && (
-                      <div style={{ 
-                        marginTop: "8px",
-                        fontSize: "14px",
-                        color: "#888"
-                      }}>
-                        {lastFeedback}
-                      </div>
-                    )}
+                  <div className="chat-logo-container">
+                    <img
+                      src={logo}
+                      alt="Logo"
+                      className="chat-logo"
+                      onClick={handleNavigateHome}
+                      style={{ cursor: "pointer" }}
+                      title="Go to home"
+                    />
                   </div>
                 )}
-
-                <div className="message system">
-                  <div>{aiMessage}</div>
-                  {hint && <div className="hint">💡 {hint}</div>}
-                </div>
-                
-                {loading && <div className="thinking">Thinking...</div>}
+                <div className="message system">{aiMessage}</div>
+                {loading && <div className="thinking">thinking...</div>}
                 {!loading && (
                   <input
                     ref={inputRef}
                     type="text"
                     className="chat-input no-focus-border"
                     value={input}
-                    readOnly
-                    placeholder="Type your response..."
+                    onChange={(e) => setInput(e.target.value)}
+                    placeholder="Hold spacebar to speak or type to respond"
                   />
+                )}
+                {!loading && input.length > 0 && (
+                  <p className="placeholder-input">
+                    {recording ? "🎤 Recording..." : "Press enter to send"}
+                  </p>
                 )}
               </div>
             </div>
-
-            <div className="code-panel">
-              <div className="code-box">
-                {codeSnippet && <SyntaxHighlighter language="python">{codeSnippet}</SyntaxHighlighter>}
+            {hint && (
+              <div className="code-panel">
+                <div className="code-box">{hint}</div>
               </div>
-            </div>
+            )}
           </>
         ) : (
           <h1 className="win-text">Congratulations! 🎉</h1>
         )}
 
-      <div className="nav-buttons">
-  {currentIndex > 0 ? (
-    <button className="nav-button left" onClick={handlePrev}>◀</button>
-  ) : (
-    <div className="nav-button-placeholder" />
-  )}
-
-  {(progressPercent < 100 || currentIndex < context.conversation.length - 1) ? (
-    <button className="nav-button right" onClick={handleNext}>▶</button>
-  ) : (
-    <div className="nav-button-placeholder" />
-  )}
-</div>
-
+        <div className="nav-buttons">
+          {currentIndex > 0 ? (
+            <button className="nav-button left" onClick={handlePrev}>
+              ◀
+            </button>
+          ) : (
+            <div className="nav-button-placeholder" />
+          )}
+          {progressPercent < 100 ||
+          currentIndex < context.conversation.length - 1 ? (
+            <button className="nav-button right" onClick={handleNext}>
+              ▶
+            </button>
+          ) : (
+            <div className="nav-button-placeholder" />
+          )}
+        </div>
       </div>
     </>
   );
