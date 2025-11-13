@@ -1,25 +1,27 @@
 # backend/main.py
-from fastapi import FastAPI
+from asyncio import to_thread
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from hf_client import query_llm
-import json
-from asyncio import to_thread
-from dotenv import load_dotenv
 from motor.motor_asyncio import AsyncIOMotorClient
-import os
 from bson import ObjectId
-from fastapi import HTTPException
+import os
+from dotenv import load_dotenv
+from hf_client import query_llm
+from redis_cache import cache_get, cache_set
+from utils import load_blob_from_mongo
+import json
 
 load_dotenv()
 
+# ---------------- MongoDB Setup ----------------
 MONGO_URI = os.environ["MONGO_URI"]
 client = AsyncIOMotorClient(MONGO_URI)
 db = client["SystemDesign"]
 learning_paths_collection = db["learning_paths"]
 
+# ---------------- FastAPI Setup ----------------
 app = FastAPI()
-
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -27,16 +29,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-### ---------- SPEECH TO TEXT ----------
-HF_API_KEY = os.getenv("HF_TOKEN")
-
-### ---------- MAIN CHAT LOGIC ----------
-async def get_system_prompt(learning_path_title: str) -> str:
-    doc = await learning_paths_collection.find_one({"title": learning_path_title})
-    if doc and "description" in doc:
-        return doc["description"]
-    return "You are a System Design Tutor. Provide concise step-by-step guidance."
-
+# ---------------- Pydantic ----------------
 class UserMessage(BaseModel):
     message: str
     context: dict = {}
@@ -44,117 +37,107 @@ class UserMessage(BaseModel):
     is_first_response: bool = False
     model_config = {"extra": "allow"}
 
+# ---------------- Chat Endpoint ----------------
 @app.post("/design_chat")
 async def design_chat(message: UserMessage):
     user_input = message.message.strip()
-    system_prompt = await get_system_prompt(message.learning_path)
 
-    last_question = message.context.get("last_question", "")
-    
-    
-    # Handle first response - just acknowledge and ask first real question
+    # 1️⃣ Load learning path content from Redis/Mongo
+    cache_key = f"learning_path:{message.learning_path}"
+    content = cache_get(cache_key)
+    if not content:
+        try:
+            content = await load_blob_from_mongo(learning_paths_collection, message.learning_path)
+            cache_set(cache_key, content)
+        except Exception as e:
+            print(f"Error loading content: {e}")
+            return {"error": "Unable to load learning path content."}
+
+    # Use first 1000 chars for context
+    context_summary = content[:1000]
+
+    # 2️⃣ Build prompt
     if message.is_first_response:
         prompt = f"""
-{system_prompt}
-
-This is the user's first response: '{user_input}'
-Welcome them and ask the first system design question about {message.learning_path}.
-1. Keep reply under 50 words
-2. Provide a hint only if the user answer is partially incorrect
-3. Hints should be subtle, nudging the user to think deeper, without revealing the answer
-4. Avoid step-by-step solutions in the hint
-
-Respond ONLY in valid JSON format:
+You are a friendly study buddy helping the user learn '{message.learning_path}'.
+Welcome the user and ask the first question about this topic.
+Rules:
+1. Keep reply under 50 words.
+2. Provide subtle hints only if the user answer is partially incorrect.
+3. Respond ONLY in JSON format with:
 {{
-    "reply": "Welcome message and first question",
-    "hint": "Subtle hint",
+    "reply": "Welcome message + first question",
+    "hint": ""
 }}
 """
     else:
-        # Get recent conversation for context
-        recent_conversation = message.context.get("conversation", [])[-6:]  # Last 3 exchanges
-        conversation_text = "\n".join([
-            f"{msg['sender']}: {msg['text']}" 
-            for msg in recent_conversation 
-            if 'text' in msg
-        ])
-        
+        recent_conversation = message.context.get("conversation", [])[-6:]
+        conversation_text = "\n".join([f"{msg['sender']}: {msg['text']}" for msg in recent_conversation if 'text' in msg])
+        last_question = message.context.get("last_question", "")
         prompt = f"""
-            {system_prompt}
+You are a friendly study buddy helping the user learn '{message.learning_path}'.
+Relevant content: {context_summary}
 
-            Recent conversation:
-            {conversation_text}
+Recent conversation:
+{conversation_text}
 
-            Current question: {last_question}
-            User's answer: {user_input}
+Current question: {last_question}
+User's answer: {user_input}
 
-            Your task:
-            1. Keep reply under 50 words with system design question about {message.learning_path}
-            2. Provide a hint only if the user answer is partially incorrect
-            3. Hints should be subtle, nudging the user to think deeper, without revealing the answer
-            4. Avoid step-by-step solutions in the hint
-            Respond ONLY in valid JSON format (no markdown, no code blocks):
-            {{
-                "reply": "Next question along with feedback",
-                "hint": "Subtle hint",
-            }}
-            """
-    
-    response_text = await to_thread(query_llm, prompt, system_prompt)
-    
-    # Clean up the response before parsing
-    response_text = response_text.strip()
-    
-    # Remove markdown code blocks if present
-    if response_text.startswith("```json"):
-        response_text = response_text[7:]
-    if response_text.startswith("```"):
-        response_text = response_text[3:]
-    if response_text.endswith("```"):
-        response_text = response_text[:-3]
-    response_text = response_text.strip()
-    
-    try:
-        parsed = json.loads(response_text)
-    except json.JSONDecodeError as e:
-        print(f"Error parsing JSON: {e}")
-        print(f"Response text: {response_text}")
-        
-        # Try to extract components manually
-        import re
-        
-        reply_match = re.search(r'"reply"\s*:\s*"([^"]*)"', response_text)
-        hint_match = re.search(r'"hint"\s*:\s*"([^"]*)"', response_text)
-        
-        parsed = {
-            "reply": reply_match.group(1) if reply_match else "Please provide more details about your approach.",
-            "hint": hint_match.group(1) if hint_match else "",
-        }
-    except Exception as e:
-        print(f"Unexpected error: {e}")
-        parsed = {
-            "reply": "Please elaborate on your system design approach.",
-            "hint": "",
-        }
-    
-    # Update conversation history
+Rules:
+1. Keep reply under 50 words.
+2. Provide subtle hints only if the user's answer is partially incorrect.
+3. Respond ONLY in JSON format:
+{{
+    "reply": "Next question or feedback",
+    "hint": "Subtle hint if needed"
+}}
+"""
+
+    # 3️⃣ Check if LLM response is cached
+    import hashlib
+    conv_text = "".join([msg.get("text", "") for msg in message.context.get("conversation", [])])
+    llm_cache_key = "llm_response:" + hashlib.sha256(f"{message.learning_path}:{user_input}:{conv_text}".encode()).hexdigest()
+    cached_response = cache_get(llm_cache_key)
+    if cached_response:
+        parsed = json.loads(cached_response)
+    else:
+        # Call LLM
+        try:
+            response_text = await to_thread(query_llm, prompt, context_summary)
+            response_text = response_text.strip()
+            for prefix in ["```json", "```"]:
+                if response_text.startswith(prefix):
+                    response_text = response_text[len(prefix):]
+            if response_text.endswith("```"):
+                response_text = response_text[:-3]
+            response_text = response_text.strip()
+
+            try:
+                parsed = json.loads(response_text)
+            except json.JSONDecodeError:
+                import re
+                reply_match = re.search(r'"reply"\s*:\s*"([^"]*)"', response_text)
+                hint_match = re.search(r'"hint"\s*:\s*"([^"]*)"', response_text)
+                parsed = {
+                    "reply": reply_match.group(1) if reply_match else "Please provide more details about your approach.",
+                    "hint": hint_match.group(1) if hint_match else "",
+                }
+
+            # Cache LLM response
+            cache_set(llm_cache_key, json.dumps(parsed))
+        except Exception as e:
+            print(f"Error processing LLM request: {e}")
+            return {"error": "Error processing request."}
+
+    # 4️⃣ Update conversation
     conversation = message.context.get("conversation", [])
-    
-    # Only add score to user message if it's not the first response
-    user_msg = {"sender": "user", "text": user_input}
-    
-    conversation.append(user_msg)
-    conversation.append({
-        "sender": "system",
-        "text": parsed.get("reply", ""),
-        "hint": parsed.get("hint", "")
-    })
-    
+    conversation.append({"sender": "user", "text": user_input})
+    conversation.append({"sender": "system", "text": parsed.get("reply", ""), "hint": parsed.get("hint", "")})
+
     updated_context = message.context.copy()
     updated_context["last_question"] = parsed.get("reply", "")
     updated_context["conversation"] = conversation
-    
-    print(f"User input: {user_input}")
 
     return {
         "reply": parsed.get("reply", ""),
@@ -162,6 +145,7 @@ Respond ONLY in valid JSON format:
         "context": updated_context
     }
 
+# ---------------- Learning Path Endpoints ----------------
 @app.get("/learning-paths")
 async def get_learning_paths():
     paths_cursor = learning_paths_collection.find()

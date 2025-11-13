@@ -5,3 +5,7 @@ motor>=3.7.1
 python-dotenv
 openai>=1.33.0
 httpx>=0.28.1
+faiss-cpu
+chromadb 
+redis 
+sentence-transformers

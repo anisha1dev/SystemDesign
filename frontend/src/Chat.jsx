@@ -9,7 +9,7 @@ function Chat() {
   const backendURL = import.meta.env.VITE_BACKEND_URL;
 
   const inputRef = useRef(null);
-  const recognitionRef = useRef(null);
+  const ttsUtteranceRef = useRef(null);
 
   const [learningPath, setLearningPath] = useState(null);
   const [context, setContext] = useState({ conversation: [] });
@@ -20,13 +20,33 @@ function Chat() {
   const [progressPercent, setProgressPercent] = useState(0);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [logo, setLogo] = useState(null);
-  const [recording, setRecording] = useState(false);
 
   const MAX_MESSAGES = 20;
   const TOTAL_QUESTIONS = 20;
 
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      if (loading) return; // optionally ignore typing while loading
+
+      if (e.key === "Enter") {
+        handleSend(); // send message
+      } else if (e.key === "Backspace") {
+        setInput((prev) => prev.slice(0, -1));
+      } else if (e.key.length === 1) {
+        // only printable characters
+        setInput((prev) => prev + e.key);
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [input, loading, context]);
+
   // ---------- TTS ----------
   function playTTS(text) {
+    // Stop any previous speech
+    window.speechSynthesis.cancel();
+
     const utterance = new SpeechSynthesisUtterance(text);
     const voices = speechSynthesis.getVoices();
     const usFemaleVoice = voices.find(
@@ -34,44 +54,17 @@ function Chat() {
     );
     utterance.voice =
       usFemaleVoice || voices.find((v) => v.lang === "en-US") || voices[0];
+
+    ttsUtteranceRef.current = utterance;
     speechSynthesis.speak(utterance);
   }
 
-  // ---------- STT (Browser Native) ----------
-  const startRecording = () => {
-    const SpeechRecognition =
-      window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SpeechRecognition) {
-      alert("Speech recognition not supported in this browser.");
-      return;
-    }
-
-    setRecording(true);
-    const recognition = new SpeechRecognition();
-    recognitionRef.current = recognition;
-    recognition.continuous = false;
-    recognition.interimResults = false;
-    recognition.lang = "en-US";
-
-    recognition.onresult = (event) => {
-      const transcript = event.results[0][0].transcript;
-      setInput(transcript);
-      handleSend();
-      setRecording(false);
+  // ---------- Stop TTS when leaving page ----------
+  useEffect(() => {
+    return () => {
+      window.speechSynthesis.cancel();
     };
-
-    recognition.onerror = (event) => {
-      console.error("STT error:", event.error);
-      setRecording(false);
-    };
-
-    recognition.start();
-  };
-
-  const stopRecording = () => {
-    recognitionRef.current?.stop();
-    setRecording(false);
-  };
+  }, []);
 
   // ---------- Fetch Learning Path ----------
   useEffect(() => {
@@ -85,7 +78,6 @@ function Chat() {
         setAiMessage(`Welcome to ${data.title}!`);
         if (data.image) setLogo(data.image);
 
-        // Load chat history
         const savedChat =
           JSON.parse(localStorage.getItem(`chat_${data._id}`)) || {};
         setContext(savedChat.context || { conversation: [] });
@@ -119,53 +111,6 @@ function Chat() {
   useEffect(() => {
     setProgressPercent(calculateProgress(context.conversation));
   }, [context]);
-
-  // ---------- Keyboard Handling ----------
-  const spaceHoldThreshold = 200;
-  useEffect(() => {
-    let spaceTimeout = null;
-
-    const handleKeyDown = (e) => {
-      if (progressPercent >= 100) return;
-
-      if (e.code === "Space" && !recording && input.length === 0) {
-        e.preventDefault();
-        spaceTimeout = setTimeout(startRecording, spaceHoldThreshold);
-        return;
-      }
-
-      if (e.key === "Enter") {
-        e.preventDefault();
-        if (!recording && input.trim() !== "") handleSend();
-      }
-
-      if (document.activeElement !== inputRef.current && e.key.length === 1) {
-        setInput((prev) => prev + e.key);
-      }
-      if (
-        document.activeElement !== inputRef.current &&
-        e.key === "Backspace"
-      ) {
-        setInput((prev) => prev.slice(0, -1));
-      }
-    };
-
-    const handleKeyUp = (e) => {
-      if (e.code === "Space") {
-        clearTimeout(spaceTimeout);
-        if (recording) stopRecording();
-        else setInput((prev) => prev + " ");
-      }
-    };
-
-    window.addEventListener("keydown", handleKeyDown);
-    window.addEventListener("keyup", handleKeyUp);
-    return () => {
-      window.removeEventListener("keydown", handleKeyDown);
-      window.removeEventListener("keyup", handleKeyUp);
-      clearTimeout(spaceTimeout);
-    };
-  }, [recording, progressPercent, input]);
 
   // ---------- Send Message ----------
   const handleSend = async () => {
@@ -300,19 +245,18 @@ function Chat() {
                 <div className="message system">{aiMessage}</div>
                 {loading && <div className="thinking">thinking...</div>}
                 {!loading && (
-                  <input
-                    ref={inputRef}
-                    type="text"
-                    className="chat-input no-focus-border"
-                    value={input}
-                    onChange={(e) => setInput(e.target.value)}
-                    placeholder="Hold spacebar to speak or type to respond"
-                  />
-                )}
-                {!loading && input.length > 0 && (
-                  <p className="placeholder-input">
-                    {recording ? "🎤 Recording..." : "Press enter to send"}
-                  </p>
+                <input
+                  ref={inputRef}
+                  type="text"
+                  className="chat-input no-focus-border"
+                  value={input}
+                  onChange={(e) => setInput(e.target.value)}
+                  placeholder="Type your response"
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") handleSend();
+                  }}
+                />
+
                 )}
               </div>
             </div>
